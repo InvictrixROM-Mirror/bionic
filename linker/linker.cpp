@@ -89,16 +89,20 @@ static const char* const kLdConfigFilePath = "/system/etc/ld.config.txt";
 static const char* const kSystemLibDir     = "/system/lib64";
 static const char* const kOdmLibDir        = "/odm/lib64";
 static const char* const kVendorLibDir     = "/vendor/lib64";
+static const char* const kOdmLibDir        = "/odm/lib64";
 static const char* const kAsanSystemLibDir = "/data/asan/system/lib64";
 static const char* const kAsanOdmLibDir    = "/data/asan/odm/lib64";
 static const char* const kAsanVendorLibDir = "/data/asan/vendor/lib64";
+static const char* const kAsanOdmLibDir    = "/data/asan/odm/lib64";
 #else
 static const char* const kSystemLibDir     = "/system/lib";
 static const char* const kOdmLibDir        = "/odm/lib";
 static const char* const kVendorLibDir     = "/vendor/lib";
+static const char* const kOdmLibDir        = "/odm/lib";
 static const char* const kAsanSystemLibDir = "/data/asan/system/lib";
 static const char* const kAsanOdmLibDir    = "/data/asan/odm/lib";
 static const char* const kAsanVendorLibDir = "/data/asan/vendor/lib";
+static const char* const kAsanOdmLibDir    = "/data/asan/odm/lib";
 #endif
 
 static const char* const kAsanLibDirPrefix = "/data/asan";
@@ -107,6 +111,7 @@ static const char* const kDefaultLdPaths[] = {
   kSystemLibDir,
   kOdmLibDir,
   kVendorLibDir,
+  kOdmLibDir,
   nullptr
 };
 
@@ -117,6 +122,8 @@ static const char* const kAsanDefaultLdPaths[] = {
   kOdmLibDir,
   kAsanVendorLibDir,
   kVendorLibDir,
+  kAsanOdmLibDir,
+  kOdmLibDir,
   nullptr
 };
 
@@ -1183,9 +1190,23 @@ const char* fix_dt_needed(const char* dt_needed, const char* sopath __unused) {
   return dt_needed;
 }
 
+static const char* get_executable_path() {
+  static std::string executable_path;
+  if (executable_path.empty()) {
+    char path[PATH_MAX];
+    ssize_t path_len = readlink("/proc/self/exe", path, sizeof(path));
+    if (path_len == -1 || path_len >= static_cast<ssize_t>(sizeof(path))) {
+      async_safe_fatal("readlink('/proc/self/exe') failed: %s", strerror(errno));
+    }
+    executable_path = std::string(path, path_len);
+  }
+
+  return executable_path.c_str();
+}
+
 template<typename F>
 static void for_each_dt_needed(const ElfReader& elf_reader, F action) {
-  for_each_matching_shim(elf_reader.name(), action);
+  for_each_matching_shim(get_executable_path(), action);
   for (const ElfW(Dyn)* d = elf_reader.dynamic(); d->d_tag != DT_NULL; ++d) {
     if (d->d_tag == DT_NEEDED) {
       action(fix_dt_needed(elf_reader.get_string(d->d_un.d_val), elf_reader.name()));
@@ -3392,7 +3413,12 @@ bool soinfo::link_image(const soinfo_list_t& global_group, const soinfo_list_t& 
 #if !defined(__LP64__)
   if (has_text_relocations) {
     // Fail if app is targeting M or above.
+#if defined(TARGET_NEEDS_PLATFORM_TEXT_RELOCATIONS)
+    if (get_application_target_sdk_version() != __ANDROID_API__
+        && get_application_target_sdk_version() >= __ANDROID_API_M__) {
+#else
     if (get_application_target_sdk_version() >= __ANDROID_API_M__) {
+#endif
       DL_ERR_AND_LOG("\"%s\" has text relocations (https://android.googlesource.com/platform/"
                      "bionic/+/master/android-changes-for-ndk-developers.md#Text-Relocations-"
                      "Enforced-for-API-level-23)", get_realpath());
